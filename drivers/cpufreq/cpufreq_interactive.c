@@ -63,7 +63,6 @@ static DEFINE_PER_CPU(struct cpufreq_interactive_cpuinfo, cpuinfo);
 static struct task_struct *speedchange_task;
 static cpumask_t speedchange_cpumask;
 static spinlock_t speedchange_cpumask_lock;
-static struct mutex gov_lock;
 
 /* Hi speed to bump to from lo speed when load burst (default max) */
 static unsigned int hispeed_freq;
@@ -98,12 +97,19 @@ static unsigned long timer_rate = DEFAULT_TIMER_RATE;
 #define DEFAULT_ABOVE_HISPEED_DELAY DEFAULT_TIMER_RATE
 static unsigned long above_hispeed_delay_val = DEFAULT_ABOVE_HISPEED_DELAY;
 
-/* Non-zero means indefinite speed boost active */
-static int boost_val;
-/* Duration of a boot pulse in usecs */
-static int boostpulse_duration_val = DEFAULT_MIN_SAMPLE_TIME;
-/* End time of boost pulse in ktime converted to usecs */
-static u64 boostpulse_endtime;
+/*
+ * Boost pulse to hispeed on touchscreen input.
+ */
+
+static int input_boost_val;
+
+struct cpufreq_interactive_inputopen {
+	struct input_handle *handle;
+	struct work_struct inputopen_work;
+};
+
+static struct cpufreq_interactive_inputopen inputopen;
+static struct workqueue_struct *inputopen_wq;
 
 /*
  * Max additional time to wait in idle, beyond timer_rate, at speeds above
@@ -383,7 +389,9 @@ static void cpufreq_interactive_timer(unsigned long data)
 	}
 
 	trace_cpufreq_interactive_target(data, cpu_load, pcpu->target_freq,
-					 pcpu->policy->cur, new_freq);
+					 new_freq);
+	pcpu->target_set_time_in_idle = now_idle;
+	pcpu->target_set_time = pcpu->timer_run_time;
 
 	pcpu->target_freq = new_freq;
 	spin_lock_irqsave(&speedchange_cpumask_lock, flags);
@@ -496,10 +504,6 @@ static int cpufreq_interactive_speedchange_task(void *data)
 			pcpu = &per_cpu(cpuinfo, cpu);
 			if (!down_read_trylock(&pcpu->enable_sem))
 				continue;
-			if (!pcpu->governor_enabled) {
-				up_read(&pcpu->enable_sem);
-				continue;
-			}
 
 			for_each_cpu(j, pcpu->policy->cpus) {
 				struct cpufreq_interactive_cpuinfo *pjcpu =
@@ -539,8 +543,9 @@ static void cpufreq_interactive_boost(void)
 		if (pcpu->target_freq < hispeed_freq) {
 			pcpu->target_freq = hispeed_freq;
 			cpumask_set_cpu(i, &speedchange_cpumask);
-			pcpu->hispeed_validate_time =
-				ktime_to_us(ktime_get());
+			pcpu->target_set_time_in_idle =
+				get_cpu_idle_time_us(i, &pcpu->target_set_time);
+			pcpu->hispeed_validate_time = pcpu->target_set_time;
 			anyboost = 1;
 		}
 
@@ -635,31 +640,9 @@ static ssize_t store_target_loads(
 		goto err;
 	}
 
-	cp = buf;
-	i = 0;
-	while (i < ntokens) {
-		if (sscanf(cp, "%u", &new_target_loads[i++]) != 1)
-			goto err_inval;
-
-		cp = strpbrk(cp, " :");
-		if (!cp)
-			break;
-		cp++;
-	}
-
-	if (i != ntokens)
-		goto err_inval;
-
-	spin_lock_irqsave(&target_loads_lock, flags);
-	if (target_loads != default_target_loads)
-		kfree(target_loads);
-	target_loads = new_target_loads;
-	ntarget_loads = ntokens;
-	spin_unlock_irqrestore(&target_loads_lock, flags);
-	return count;
-
-err_inval:
-	ret = -EINVAL;
+	inputopen.handle = handle;
+	queue_work(inputopen_wq, &inputopen.inputopen_work);
+	return 0;
 err:
 	kfree(new_target_loads);
 	return ret;
@@ -997,8 +980,8 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 			up_write(&pcpu->enable_sem);
 		}
 
-		if (--active_count > 0) {
-			mutex_unlock(&gov_lock);
+		flush_work(&inputopen.inputopen_work);
+		if (atomic_dec_return(&active_count) > 0)
 			return 0;
 		}
 
@@ -1040,31 +1023,31 @@ static int __init cpufreq_interactive_init(void)
 		init_rwsem(&pcpu->enable_sem);
 	}
 
-	spin_lock_init(&up_cpumask_lock);
-	spin_lock_init(&down_cpumask_lock);
-	mutex_init(&set_speed_lock);
-
-	up_task = kthread_create(cpufreq_interactive_up_task, NULL,
-				 "kinteractiveup");
-	if (IS_ERR(up_task))
-		return PTR_ERR(up_task);
-
-	sched_setscheduler_nocheck(up_task, SCHED_FIFO, &param);
-	get_task_struct(up_task);
+	spin_lock_init(&speedchange_cpumask_lock);
+	speedchange_task =
+		kthread_create(cpufreq_interactive_speedchange_task, NULL,
+			       "cfinteractive");
+	if (IS_ERR(speedchange_task))
+		return PTR_ERR(speedchange_task);
 
 	sched_setscheduler_nocheck(speedchange_task, SCHED_FIFO, &param);
 	get_task_struct(speedchange_task);
 
-	/* NB: wake up so the thread does not look hung to the freezer */
-	wake_up_process(speedchange_task);
+	inputopen_wq = create_workqueue("cfinteractive");
 
-	INIT_WORK(&freq_scale_down_work, cpufreq_interactive_freq_down);
+	if (!inputopen_wq)
+		goto err_freetask;
+
 	INIT_WORK(&inputopen.inputopen_work, cpufreq_interactive_input_open);
 
 	/* NB: wake up so the thread does not look hung to the freezer */
-	wake_up_process(up_task);
+	wake_up_process(speedchange_task);
 
 	return cpufreq_register_governor(&cpufreq_gov_interactive);
+
+err_freetask:
+	put_task_struct(speedchange_task);
+	return -ENOMEM;
 }
 
 #ifdef CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE
@@ -1078,6 +1061,7 @@ static void __exit cpufreq_interactive_exit(void)
 	cpufreq_unregister_governor(&cpufreq_gov_interactive);
 	kthread_stop(speedchange_task);
 	put_task_struct(speedchange_task);
+	destroy_workqueue(inputopen_wq);
 }
 
 module_exit(cpufreq_interactive_exit);
