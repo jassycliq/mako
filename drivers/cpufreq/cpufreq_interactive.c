@@ -98,22 +98,8 @@ static unsigned long timer_rate = DEFAULT_TIMER_RATE;
 static unsigned long above_hispeed_delay_val = DEFAULT_ABOVE_HISPEED_DELAY;
 
 /*
- * Boost pulse to hispeed on touchscreen input.
- */
 
-static int input_boost_val;
-
-struct cpufreq_interactive_inputopen {
-	struct input_handle *handle;
-	struct work_struct inputopen_work;
-};
-
-static struct cpufreq_interactive_inputopen inputopen;
-static struct workqueue_struct *inputopen_wq;
-
-/*
- * Max additional time to wait in idle, beyond timer_rate, at speeds above
- * minimum before wakeup to reduce speed, or -1 if unnecessary.
+ * Non-zero means longer-term speed boost active.
  */
 #define DEFAULT_TIMER_SLACK (4 * DEFAULT_TIMER_RATE)
 static int timer_slack_val = DEFAULT_TIMER_SLACK;
@@ -564,94 +550,6 @@ static void cpufreq_interactive_boost(void)
 		wake_up_process(speedchange_task);
 }
 
-static int cpufreq_interactive_notifier(
-	struct notifier_block *nb, unsigned long val, void *data)
-{
-	struct cpufreq_freqs *freq = data;
-	struct cpufreq_interactive_cpuinfo *pcpu;
-	int cpu;
-	unsigned long flags;
-
-	if (val == CPUFREQ_POSTCHANGE) {
-		pcpu = &per_cpu(cpuinfo, freq->cpu);
-		if (!down_read_trylock(&pcpu->enable_sem))
-			return 0;
-		if (!pcpu->governor_enabled) {
-			up_read(&pcpu->enable_sem);
-			return 0;
-		}
-
-		for_each_cpu(cpu, pcpu->policy->cpus) {
-			struct cpufreq_interactive_cpuinfo *pjcpu =
-				&per_cpu(cpuinfo, cpu);
-			spin_lock_irqsave(&pjcpu->load_lock, flags);
-			update_load(cpu);
-			spin_unlock_irqrestore(&pjcpu->load_lock, flags);
-		}
-
-		up_read(&pcpu->enable_sem);
-	}
-	return 0;
-}
-
-static struct notifier_block cpufreq_notifier_block = {
-	.notifier_call = cpufreq_interactive_notifier,
-};
-
-static ssize_t show_target_loads(
-	struct kobject *kobj, struct attribute *attr, char *buf)
-{
-	int i;
-	ssize_t ret = 0;
-	unsigned long flags;
-
-	spin_lock_irqsave(&target_loads_lock, flags);
-
-	for (i = 0; i < ntarget_loads; i++)
-		ret += sprintf(buf + ret, "%u%s", target_loads[i],
-			       i & 0x1 ? ":" : " ");
-
-	ret += sprintf(buf + ret, "\n");
-	spin_unlock_irqrestore(&target_loads_lock, flags);
-	return ret;
-}
-
-static ssize_t store_target_loads(
-	struct kobject *kobj, struct attribute *attr, const char *buf,
-	size_t count)
-{
-	int ret;
-	const char *cp;
-	unsigned int *new_target_loads = NULL;
-	int ntokens = 1;
-	int i;
-	unsigned long flags;
-
-	cp = buf;
-	while ((cp = strpbrk(cp + 1, " :")))
-		ntokens++;
-
-	if (!(ntokens & 0x1))
-		goto err_inval;
-
-	new_target_loads = kmalloc(ntokens * sizeof(unsigned int), GFP_KERNEL);
-	if (!new_target_loads) {
-		ret = -ENOMEM;
-		goto err;
-	}
-
-	inputopen.handle = handle;
-	queue_work(inputopen_wq, &inputopen.inputopen_work);
-	return 0;
-err:
-	kfree(new_target_loads);
-	return ret;
-}
-
-static struct global_attr target_loads_attr =
-	__ATTR(target_loads, S_IRUGO | S_IWUSR,
-		show_target_loads, store_target_loads);
-
 static ssize_t show_hispeed_freq(struct kobject *kobj,
 				 struct attribute *attr, char *buf)
 {
@@ -764,29 +662,6 @@ static ssize_t store_timer_rate(struct kobject *kobj,
 static struct global_attr timer_rate_attr = __ATTR(timer_rate, 0644,
 		show_timer_rate, store_timer_rate);
 
-static ssize_t show_timer_slack(
-	struct kobject *kobj, struct attribute *attr, char *buf)
-{
-	return sprintf(buf, "%d\n", timer_slack_val);
-}
-
-static ssize_t store_timer_slack(
-	struct kobject *kobj, struct attribute *attr, const char *buf,
-	size_t count)
-{
-	int ret;
-	unsigned long val;
-
-	ret = kstrtol(buf, 10, &val);
-	if (ret < 0)
-		return ret;
-
-	timer_slack_val = val;
-	return count;
-}
-
-define_one_global_rw(timer_slack);
-
 static ssize_t show_boost(struct kobject *kobj, struct attribute *attr,
 			  char *buf)
 {
@@ -866,7 +741,6 @@ static struct attribute *interactive_attributes[] = {
 	&above_hispeed_delay.attr,
 	&min_sample_time_attr.attr,
 	&timer_rate_attr.attr,
-	&timer_slack.attr,
 	&boost.attr,
 	&boostpulse.attr,
 	&boostpulse_duration.attr,
@@ -961,11 +835,6 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 			return rc;
 		}
 
-		rc = input_register_handler(&cpufreq_interactive_input_handler);
-		if (rc)
-			pr_warn("%s: failed to register input handler\n",
-				__func__);
-
 		idle_notifier_register(&cpufreq_interactive_idle_nb);
 		break;
 
@@ -980,13 +849,11 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 			up_write(&pcpu->enable_sem);
 		}
 
-		flush_work(&inputopen.inputopen_work);
 		if (atomic_dec_return(&active_count) > 0)
 			return 0;
 		}
 
 		idle_notifier_unregister(&cpufreq_interactive_idle_nb);
-		input_unregister_handler(&cpufreq_interactive_input_handler);
 		sysfs_remove_group(cpufreq_global_kobject,
 				&interactive_attr_group);
 		mutex_unlock(&gov_lock);
@@ -1033,21 +900,10 @@ static int __init cpufreq_interactive_init(void)
 	sched_setscheduler_nocheck(speedchange_task, SCHED_FIFO, &param);
 	get_task_struct(speedchange_task);
 
-	inputopen_wq = create_workqueue("cfinteractive");
-
-	if (!inputopen_wq)
-		goto err_freetask;
-
-	INIT_WORK(&inputopen.inputopen_work, cpufreq_interactive_input_open);
-
 	/* NB: wake up so the thread does not look hung to the freezer */
 	wake_up_process(speedchange_task);
 
 	return cpufreq_register_governor(&cpufreq_gov_interactive);
-
-err_freetask:
-	put_task_struct(speedchange_task);
-	return -ENOMEM;
 }
 
 #ifdef CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE
@@ -1061,7 +917,6 @@ static void __exit cpufreq_interactive_exit(void)
 	cpufreq_unregister_governor(&cpufreq_gov_interactive);
 	kthread_stop(speedchange_task);
 	put_task_struct(speedchange_task);
-	destroy_workqueue(inputopen_wq);
 }
 
 module_exit(cpufreq_interactive_exit);
