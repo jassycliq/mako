@@ -1385,12 +1385,8 @@ generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter, loff_t pos)
 			retval = filemap_write_and_wait_range(mapping, pos,
 					pos + count - 1);
 			if (!retval) {
-				struct blk_plug plug;
-
-				blk_start_plug(&plug);
 				retval = mapping->a_ops->direct_IO(READ, iocb,
-								   iter, pos);
-				blk_finish_plug(&plug);
+							iov, pos, nr_segs);
 			}
 			if (retval > 0) {
 				*ppos = pos + retval;
