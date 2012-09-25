@@ -307,8 +307,27 @@ static void cpufreq_interactive_timer(unsigned long data)
 	cpu_load = loadadjfreq / pcpu->target_freq;
 	boosted = boost_val || now < boostpulse_endtime;
 
-	if (cpu_load >= go_hispeed_load || boosted) {
-		if (pcpu->target_freq < hispeed_freq) {
+	delta_idle = (unsigned int)(now_idle - pcpu->target_set_time_in_idle);
+	delta_time = (unsigned int)(pcpu->timer_run_time -
+				    pcpu->target_set_time);
+
+	if ((delta_time == 0) || (delta_idle > delta_time))
+		load_since_change = 0;
+	else
+		load_since_change =
+			100 * (delta_time - delta_idle) / delta_time;
+
+	/*
+	 * Choose greater of short-term load (since last idle timer
+	 * started or timer function re-armed itself) or long-term load
+	 * (since last frequency change).
+	 */
+	if (load_since_change > cpu_load)
+		cpu_load = load_since_change;
+
+	if (cpu_load >= go_hispeed_load || boost_val) {
+		if (pcpu->target_freq < hispeed_freq &&
+		    hispeed_freq < pcpu->policy->max) {
 			new_freq = hispeed_freq;
 		} else {
 			new_freq = choose_freq(pcpu, loadadjfreq);
