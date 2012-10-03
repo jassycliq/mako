@@ -131,6 +131,8 @@
 
 #ifdef CONFIG_CPU_FREQ_GOV_INTELLIDEMAND
 int id_set_two_phase_freq(int cpufreq);
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+int set_two_phase_freq(int cpufreq);
 #endif
 
 static bool mako_charger_mode;
@@ -2144,6 +2146,9 @@ static void __init apq8064_mako_init(void)
 
 	apq8064_init_input();
 	apq8064_init_misc();
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+        set_two_phase_freq(1026000);
+#endif
 }
 
 MACHINE_START(APQ8064_MAKO, "QCT APQ8064 MAKO")
