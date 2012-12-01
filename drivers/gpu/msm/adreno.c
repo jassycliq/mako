@@ -2441,11 +2441,6 @@ static int adreno_waittimestamp(struct kgsl_device *device,
 			break;
 		}
 
-		io_cnt = (io_cnt + 1) % 100;
-		if (io_cnt <
-		    pwr->pwrlevels[pwr->active_pwrlevel].io_fraction)
-			io = 0;
-
 		/* Check to see if the GPU is hung */
 		if (adreno_hang_detect(device, prev_reg_val)) {
 			ret = adreno_handle_hang(device, context, timestamp);
