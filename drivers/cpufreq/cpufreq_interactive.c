@@ -45,8 +45,6 @@ struct cpufreq_interactive_cpuinfo {
 	spinlock_t load_lock; /* protects the next 4 fields */
 	u64 time_in_idle;
 	u64 time_in_idle_timestamp;
-	u64 target_set_time;
-	u64 target_set_time_in_idle;
 	struct cpufreq_policy *policy;
 	struct cpufreq_frequency_table *freq_table;
 	unsigned int target_freq;
@@ -267,7 +265,6 @@ static void cpufreq_interactive_timer(unsigned long data)
 	unsigned int delta_time;
 	u64 cputime_speedadj;
 	int cpu_load;
-	int load_since_change;
 	struct cpufreq_interactive_cpuinfo *pcpu =
 		&per_cpu(cpuinfo, data);
 	unsigned int new_freq;
@@ -295,23 +292,6 @@ static void cpufreq_interactive_timer(unsigned long data)
 	loadadjfreq = (unsigned int)cputime_speedadj * 100;
 	cpu_load = loadadjfreq / pcpu->target_freq;
 	boosted = boost_val || now < boostpulse_endtime;
-
-	delta_idle = (unsigned int)(now_idle - pcpu->target_set_time_in_idle);
-	delta_time = (unsigned int)(now - pcpu->target_set_time);
-
-	if ((delta_time == 0) || (delta_idle > delta_time))
-		load_since_change = 0;
-	else
-		load_since_change =
-			100 * (delta_time - delta_idle) / delta_time;
-
-	/*
-	 * Choose greater of short-term load (since last idle timer
-	 * started or timer function re-armed itself) or long-term load
-	 * (since last frequency change).
-	 */
-	if (load_since_change > cpu_load)
-		cpu_load = load_since_change;
 
 	if ((cpu_load >= go_hispeed_load || boost_val) &&
 	    pcpu->target_freq < hispeed_freq)
@@ -365,8 +345,6 @@ static void cpufreq_interactive_timer(unsigned long data)
 
 	trace_cpufreq_interactive_target(data, cpu_load, pcpu->target_freq,
 					 pcpu->policy->cur, new_freq);
-	pcpu->target_set_time_in_idle = now_idle;
-	pcpu->target_set_time = now;
 
 	pcpu->target_freq = new_freq;
 	spin_lock_irqsave(&speedchange_cpumask_lock, flags);
@@ -536,9 +514,8 @@ static void cpufreq_interactive_boost(void)
 		if (pcpu->target_freq < hispeed_freq) {
 			pcpu->target_freq = hispeed_freq;
 			cpumask_set_cpu(i, &speedchange_cpumask);
-			pcpu->target_set_time_in_idle =
-				get_cpu_idle_time_us(i, &pcpu->target_set_time);
-			pcpu->hispeed_validate_time = pcpu->target_set_time;
+			pcpu->hispeed_validate_time =
+				ktime_to_us(ktime_get());
 			anyboost = 1;
 		}
 
@@ -887,15 +864,6 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 				ktime_to_us(ktime_get());
 			pcpu->hispeed_validate_time =
 				pcpu->floor_validate_time;
-			down_write(&pcpu->enable_sem);
-			expires = jiffies + usecs_to_jiffies(timer_rate);
-			pcpu->cpu_timer.expires = expires;
-			add_timer_on(&pcpu->cpu_timer, j);
-			if (timer_slack_val >= 0) {
-				expires += usecs_to_jiffies(timer_slack_val);
-				pcpu->cpu_slack_timer.expires = expires;
-				add_timer_on(&pcpu->cpu_slack_timer, j);
-			}
 			pcpu->governor_enabled = 1;
 			smp_wmb();
 			pcpu->cpu_timer.expires =
