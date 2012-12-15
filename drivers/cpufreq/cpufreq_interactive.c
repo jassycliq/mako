@@ -104,12 +104,12 @@ static unsigned long timer_rate = DEFAULT_TIMER_RATE;
 #define DEFAULT_ABOVE_HISPEED_DELAY DEFAULT_TIMER_RATE
 static unsigned long above_hispeed_delay_val = DEFAULT_ABOVE_HISPEED_DELAY;
 
-/*
-
- * Non-zero means longer-term speed boost active.
- */
-#define DEFAULT_TIMER_SLACK (4 * DEFAULT_TIMER_RATE)
-static int timer_slack_val = DEFAULT_TIMER_SLACK;
+/* Non-zero means indefinite speed boost active */
+static int boost_val;
+/* Duration of a boot pulse in usecs */
+static int boostpulse_duration_val = DEFAULT_MIN_SAMPLE_TIME;
+/* End time of boost pulse in ktime converted to usecs */
+static u64 boostpulse_endtime;
 
 static bool governidle;
 module_param(governidle, bool, S_IWUSR | S_IRUGO);
@@ -297,8 +297,9 @@ static void cpufreq_interactive_timer(unsigned long data)
 	do_div(cputime_speedadj, delta_time);
 	loadadjfreq = (unsigned int)cputime_speedadj * 100;
 	cpu_load = loadadjfreq / pcpu->target_freq;
+	boosted = boost_val || now < boostpulse_endtime;
 
-	if ((cpu_load >= go_hispeed_load || boost_val) &&
+	if ((cpu_load >= go_hispeed_load || boosted) &&
 	    pcpu->target_freq < hispeed_freq)
 		new_freq = hispeed_freq;
 	else
@@ -338,8 +339,18 @@ static void cpufreq_interactive_timer(unsigned long data)
 		}
 	}
 
-	pcpu->floor_freq = new_freq;
-	pcpu->floor_validate_time = now;
+	/*
+	 * Update the timestamp for checking whether speed has been held at
+	 * or above the selected frequency for a minimum of min_sample_time,
+	 * if not boosted to hispeed_freq.  If boosted to hispeed_freq then we
+	 * allow the speed to drop as soon as the boostpulse duration expires
+	 * (or the indefinite boost is turned off).
+	 */
+
+	if (!boosted || new_freq > hispeed_freq) {
+		pcpu->floor_freq = new_freq;
+		pcpu->floor_validate_time = now;
+	}
 
 	if (pcpu->target_freq == new_freq) {
 		trace_cpufreq_interactive_already(
