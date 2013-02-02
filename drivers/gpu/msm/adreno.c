@@ -2302,6 +2302,18 @@ unsigned int adreno_hang_detect(struct kgsl_device *device,
 		return 0;
 	}
 
+	/*
+	 * Time interval between hang detection should be KGSL_TIMEOUT_PART
+	 * or more, if next hang detection is requested < KGSL_TIMEOUT_PART
+	 * from the last time do nothing.
+	 */
+	if ((next_hang_detect_time) &&
+		(time_before(jiffies, next_hang_detect_time)))
+			return 0;
+	else
+		next_hang_detect_time = (jiffies +
+			msecs_to_jiffies(KGSL_TIMEOUT_PART-1));
+
 	for (i = 0; i < hang_detect_regs_count; i++) {
 		adreno_regread(device, hang_detect_regs[i],
 					   &curr_reg_val[i]);
