@@ -109,6 +109,13 @@ static u64 boostpulse_endtime;
 #define DEFAULT_TIMER_SLACK (4 * DEFAULT_TIMER_RATE)
 static int timer_slack_val = DEFAULT_TIMER_SLACK;
 
+/*
+ * The CPU will be boosted to this frequency when the screen is
+ * touched. input_boost needs to be enabled.
+ */
+
+static int input_boost_freq;
+
 static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		unsigned int event);
 
@@ -516,15 +523,14 @@ static void cpufreq_interactive_boost(void)
 	int anyboost = 0;
 	unsigned long flags;
 	struct cpufreq_interactive_cpuinfo *pcpu;
-    unsigned int my_freq = 1026000;
 
 	spin_lock_irqsave(&speedchange_cpumask_lock, flags);
 
 	for_each_online_cpu(i) {
 		pcpu = &per_cpu(cpuinfo, i);
 
-		if (pcpu->target_freq < my_freq) {
-			pcpu->target_freq = my_freq;
+		if (pcpu->target_freq < input_boost_freq) {
+			pcpu->target_freq = input_boost_freq;
 			cpumask_set_cpu(i, &up_cpumask);
 			pcpu->target_set_time_in_idle =
 				get_cpu_idle_time_us(i, &pcpu->target_set_time);
@@ -537,7 +543,7 @@ static void cpufreq_interactive_boost(void)
 		 * validated.
 		 */
 
-		pcpu->floor_freq = my_freq;
+		pcpu->floor_freq = input_boost_freq;
 		pcpu->floor_validate_time = ktime_to_us(ktime_get());
 	}
 
@@ -841,28 +847,29 @@ static ssize_t store_boostpulse(struct kobject *kobj, struct attribute *attr,
 static struct global_attr boostpulse =
 	__ATTR(boostpulse, 0200, NULL, store_boostpulse);
 
-static ssize_t show_boostpulse_duration(
-	struct kobject *kobj, struct attribute *attr, char *buf)
+static ssize_t show_input_boost_freq(struct kobject *kobj, struct attribute *attr,
+			  char *buf)
 {
-	return sprintf(buf, "%d\n", boostpulse_duration_val);
+	return sprintf(buf, "%d\n", input_boost_freq);
 }
 
-static ssize_t store_boostpulse_duration(
-	struct kobject *kobj, struct attribute *attr, const char *buf,
-	size_t count)
+static ssize_t store_input_boost_freq(struct kobject *kobj, struct attribute *attr,
+			   const char *buf, size_t count)
 {
 	int ret;
 	unsigned long val;
 
-	ret = kstrtoul(buf, 0, &val);
+	ret = strict_strtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 
-	boostpulse_duration_val = val;
+	input_boost_freq = val;
+
 	return count;
 }
 
-define_one_global_rw(boostpulse_duration);
+static struct global_attr input_boost_freq_attr = __ATTR(input_boost_freq, 0644,
+		show_input_boost_freq, store_input_boost_freq);
 
 static struct attribute *interactive_attributes[] = {
 	&target_loads_attr.attr,
@@ -874,7 +881,7 @@ static struct attribute *interactive_attributes[] = {
 	&timer_slack.attr,
 	&boost.attr,
 	&boostpulse.attr,
-	&boostpulse_duration.attr,
+	&input_boost_freq_attr.attr,
 	NULL,
 };
 
@@ -946,6 +953,10 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 			}
 			pcpu->governor_enabled = 1;
 			up_write(&pcpu->enable_sem);
+		}
+		if (!hispeed_freq) {
+			hispeed_freq = policy->max;
+			input_boost_freq = hispeed_freq;
 		}
 
 		/*
