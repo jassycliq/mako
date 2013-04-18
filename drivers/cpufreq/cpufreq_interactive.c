@@ -890,25 +890,38 @@ static struct attribute_group interactive_attr_group = {
 	.name = "interactive",
 };
 
-static int cpufreq_interactive_idle_notifier(struct notifier_block *nb,
-					     unsigned long val,
-					     void *data)
+inline void scale_above_hispeed_delay(bool increase)
 {
-	switch (val) {
-	case IDLE_START:
-		cpufreq_interactive_idle_start();
-		break;
-	case IDLE_END:
-		cpufreq_interactive_idle_end();
-		break;
-	}
-
-	return 0;
+	if (increase)
+		above_hispeed_delay_val = 50 * 1000;
+	else
+		above_hispeed_delay_val = 0;
 }
 
-static struct notifier_block cpufreq_interactive_idle_nb = {
-	.notifier_call = cpufreq_interactive_idle_notifier,
-};
+inline void scale_go_hispeed_load(bool increase)
+{
+	if (increase)
+		go_hispeed_load = 99;
+	else
+		go_hispeed_load = 85; 
+}
+
+inline void scale_timer_rate(bool increase)
+{
+	if (increase)
+		timer_rate = 30 * 1000;
+	else
+		timer_rate = 15 * 1000; 
+}
+
+inline void scale_min_sample_time(bool increase)
+{
+	if (increase)
+		min_sample_time = 80 * 1000;
+	else
+		min_sample_time = 20 * 1000; 
+}
+>>>>>>> 698058a... cpufreq: interactive: add hooks in the Hotplug driver to scale interactive tunables based on system load.
 
 static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		unsigned int event)
