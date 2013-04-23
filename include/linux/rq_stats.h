@@ -25,5 +25,3 @@ struct rq_data {
 	struct work_struct def_timer_work;
 	int init;
 };
-
-extern unsigned int report_load_at_max_freq(void);
