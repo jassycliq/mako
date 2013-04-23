@@ -25,3 +25,7 @@ struct rq_data {
 	struct work_struct def_timer_work;
 	int init;
 };
+
+extern spinlock_t rq_lock;
+extern struct rq_data rq_info;
+extern struct workqueue_struct *rq_wq;
