@@ -54,6 +54,7 @@ struct lge_touch_attribute {
 static int is_pressure;
 static int is_width_major;
 static int is_width_minor;
+static bool is_screen_locked;
 
 #define LGE_TOUCH_ATTR(_name, _mode, _show, _store)               \
 	struct lge_touch_attribute lge_touch_attr_##_name =       \
@@ -822,6 +823,8 @@ static void touch_input_report(struct lge_touch_data *ts)
 		}
 	}
 
+	is_screen_locked = false;
+
 	input_sync(ts->input_dev);
 }
 
@@ -862,7 +865,8 @@ static void touch_work_func(struct work_struct *work)
 		int_pin = gpio_get_value(ts->pdata->int_pin);
 
 	/* Accuracy Solution */
-	accuracy_filter_func(ts);
+	if (!is_screen_locked)
+		accuracy_filter_func(ts);
 
 	/* Jitter Solution */
 	if (likely(ts->pdata->role->jitter_filter_enable)) {
@@ -1828,6 +1832,8 @@ static int touch_probe(struct i2c_client *client,
 
 	ts->fw_info.fw_force_rework = false;
 
+	is_screen_locked = false;
+
 	/* Specific device probe */
 	if (touch_device_func->probe) {
 		ret = touch_device_func->probe(client);
@@ -2092,6 +2098,8 @@ static void touch_early_suspend(struct early_suspend *h)
 		TOUCH_DEBUG_MSG("\n");
 
 	ts->curr_resume_state = 0;
+
+	is_screen_locked = true;
 
 	if (unlikely(ts->fw_upgrade.is_downloading == UNDER_DOWNLOADING)) {
 		TOUCH_INFO_MSG("early_suspend is not executed\n");
