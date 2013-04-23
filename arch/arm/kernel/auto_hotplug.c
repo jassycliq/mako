@@ -398,6 +398,7 @@ static void auto_hotplug_late_resume(struct early_suspend *handler)
 	//stack the deck, let's get moving again
 	history[0] = 500;
 	history[1] = 500;
+	history[2] = 500;
 	history[3] = 500;
 	history[4] = 500;
 
