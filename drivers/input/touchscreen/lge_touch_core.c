@@ -54,7 +54,6 @@ struct lge_touch_attribute {
 static int is_pressure;
 static int is_width_major;
 static int is_width_minor;
-static bool is_screen_locked;
 
 #define LGE_TOUCH_ATTR(_name, _mode, _show, _store)               \
 	struct lge_touch_attribute lge_touch_attr_##_name =       \
@@ -823,8 +822,6 @@ static void touch_input_report(struct lge_touch_data *ts)
 		}
 	}
 
-	is_screen_locked = false;
-
 	input_sync(ts->input_dev);
 }
 
@@ -865,8 +862,10 @@ static void touch_work_func(struct work_struct *work)
 		int_pin = gpio_get_value(ts->pdata->int_pin);
 
 	/* Accuracy Solution */
-	if (!is_screen_locked)
-		accuracy_filter_func(ts);
+	if (likely(ts->pdata->role->accuracy_filter_enable)) {
+		if (accuracy_filter_func(ts) < 0)
+			goto out;
+	}
 
 	/* Jitter Solution */
 	if (likely(ts->pdata->role->jitter_filter_enable)) {
@@ -1832,8 +1831,6 @@ static int touch_probe(struct i2c_client *client,
 
 	ts->fw_info.fw_force_rework = false;
 
-	is_screen_locked = false;
-
 	/* Specific device probe */
 	if (touch_device_func->probe) {
 		ret = touch_device_func->probe(client);
@@ -1962,22 +1959,24 @@ static int touch_probe(struct i2c_client *client,
 	touch_ic_init(ts);
 
 	/* Firmware Upgrade Check - use thread for booting time reduction */
-	if (unlikely(touch_device_func->fw_upgrade)) {
+	if (touch_device_func->fw_upgrade) {
 		queue_work(touch_wq, &ts->work_fw_upgrade);
 	}
 
 	/* jitter solution */
-	if (unlikely(ts->pdata->role->jitter_filter_enable)) {
+	if (ts->pdata->role->jitter_filter_enable) {
 		ts->jitter_filter.adjust_margin = 100;
 	}
 
 	/* accuracy solution */
-	ts->accuracy_filter.ignore_pressure_gap = 0;
-	ts->accuracy_filter.delta_max = 0;
-	ts->accuracy_filter.max_pressure = 0;
-	ts->accuracy_filter.time_to_max_pressure = 200;
-	ts->accuracy_filter.direction_count = 20;
-	ts->accuracy_filter.touch_max_count = 40;
+	if (ts->pdata->role->accuracy_filter_enable) {
+		ts->accuracy_filter.ignore_pressure_gap = 5;
+		ts->accuracy_filter.delta_max = 100;
+		ts->accuracy_filter.max_pressure = 255;
+		ts->accuracy_filter.time_to_max_pressure = one_sec / 25;
+		ts->accuracy_filter.direction_count = one_sec / 8;
+		ts->accuracy_filter.touch_max_count = one_sec / 3;
+	}
 
         device_init_wakeup(&client->dev, true);
 
@@ -2099,9 +2098,7 @@ static void touch_early_suspend(struct early_suspend *h)
 
 	ts->curr_resume_state = 0;
 
-	is_screen_locked = true;
-
-	if (unlikely(ts->fw_upgrade.is_downloading == UNDER_DOWNLOADING)) {
+	if (ts->fw_upgrade.is_downloading == UNDER_DOWNLOADING) {
 		TOUCH_INFO_MSG("early_suspend is not executed\n");
 		return;
 	}
@@ -2130,20 +2127,6 @@ static void touch_early_suspend(struct early_suspend *h)
 		enable_irq_wake(ts->client->irq);
         }
 #endif
-	if (ts->pdata->role->operation_mode == INTERRUPT_MODE)
-		disable_irq(ts->client->irq);
-	else
-		hrtimer_cancel(&ts->timer);
-
-	cancel_work_sync(&ts->work);
-	if (delayed_work_pending(&ts->work_init))
-		cancel_delayed_work_sync(&ts->work_init);
-	if (ts->pdata->role->key_type == TOUCH_HARD_KEY)
-		cancel_delayed_work_sync(&ts->work_touch_lock);
-
-	release_all_ts_event(ts);
-
-	touch_power_cntl(ts, ts->pdata->role->suspend_pwr);
 }
 
 static void touch_late_resume(struct early_suspend *h)
@@ -2163,24 +2146,13 @@ static void touch_late_resume(struct early_suspend *h)
 
 	ts->curr_resume_state = 1;
 
-	if (unlikely(ts->fw_upgrade.is_downloading == UNDER_DOWNLOADING)) {
+	if (ts->fw_upgrade.is_downloading == UNDER_DOWNLOADING) {
 		TOUCH_INFO_MSG("late_resume is not executed\n");
 		return;
 	}
 
 #ifdef CONFIG_TOUCHSCREEN_SWEEP2WAKE
         if (s2w_switch == 0)
-	touch_power_cntl(ts, ts->pdata->role->resume_pwr);
-
-	if (ts->pdata->role->operation_mode == INTERRUPT_MODE)
-		enable_irq(ts->client->irq);
-	else
-		hrtimer_start(&ts->timer,
-			ktime_set(0, ts->pdata->role->report_period),
-					HRTIMER_MODE_REL);
-	
-	touch_ic_init(ts);
-}
 #endif
         {
 	        touch_power_cntl(ts, ts->pdata->role->resume_pwr);
