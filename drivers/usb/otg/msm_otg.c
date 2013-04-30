@@ -2986,7 +2986,7 @@ static void msm_otg_set_vbus_state(int online)
 {
 	static bool init;
 	struct msm_otg *motg = the_msm_otg;
-	struct usb_otg *otg = motg->phy.otg;
+	//struct usb_otg *otg = motg->phy.otg;
 
 	// need BSV interrupt in A Host Mode to detect cable unplug -ziddey
 	/* In A Host Mode, ignore received BSV interrupts */
