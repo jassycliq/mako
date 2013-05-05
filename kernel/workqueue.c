@@ -23,6 +23,9 @@
  * Please read Documentation/workqueue.txt for details.
  */
 
+// suppress bogus warning when compiling
+#pragma GCC diagnostic ignored "-Warray-bounds"
+
 #include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
