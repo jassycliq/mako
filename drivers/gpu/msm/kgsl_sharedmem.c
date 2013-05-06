@@ -609,12 +609,16 @@ _kgsl_sharedmem_page_alloc(struct kgsl_memdesc *memdesc,
 		if (len < page_size)
 			page_size = PAGE_SIZE;
 
-		pages[i] = alloc_page(GFP_KERNEL | __GFP_HIGHMEM |
-			__GFP_NOWARN | __GFP_NORETRY);
-		if (pages[i] == NULL) {
-			ret = -ENOMEM;
-			memdesc->sglen = i;
-			goto done;
+		if (page_size != PAGE_SIZE)
+			gfp_mask |= __GFP_COMP;
+
+		page = alloc_pages(gfp_mask, get_order(page_size));
+
+		if (page == NULL) {
+			if (page_size != PAGE_SIZE) {
+				page_size = PAGE_SIZE;
+				continue;
+			}
 		}
 
 		for (j = 0; j < page_size >> PAGE_SHIFT; j++)
