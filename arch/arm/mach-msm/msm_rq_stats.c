@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -30,6 +30,8 @@
 #include <linux/kernel_stat.h>
 #include <linux/tick.h>
 #include <asm/smp_plat.h>
+#include "acpuclock.h"
+#include <linux/suspend.h>
 
 #define MAX_LONG_SIZE 24
 #define DEFAULT_RQ_POLL_JIFFIES 1
@@ -195,6 +197,8 @@ static int cpu_hotplug_handler(struct notifier_block *nb,
 
 	switch (val) {
 	case CPU_ONLINE:
+		if (!this_cpu->cur_freq)
+			this_cpu->cur_freq = acpuclk_get_rate(cpu);
 	case CPU_ONLINE_FROZEN:
 		this_cpu->avg_load_maxfreq = 0;
 	}
@@ -202,11 +206,22 @@ static int cpu_hotplug_handler(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
-#ifdef CONFIG_MSM_MPDEC
-unsigned int get_rq_info(void)
+static int system_suspend_handler(struct notifier_block *nb,
+				unsigned long val, void *data)
 {
-	unsigned long flags = 0;
-        unsigned int rq = 0;
+	switch (val) {
+	case PM_POST_HIBERNATION:
+	case PM_POST_SUSPEND:
+		rq_info.hotplug_disabled = 0;
+	case PM_HIBERNATION_PREPARE:
+	case PM_SUSPEND_PREPARE:
+		rq_info.hotplug_disabled = 1;
+		break;
+	default:
+		return NOTIFY_DONE;
+	}
+	return NOTIFY_OK;
+}
 
 
 static ssize_t hotplug_disable_show(struct kobject *kobj,
@@ -382,6 +397,8 @@ static int __init msm_rq_stats_init(void)
 		mutex_init(&pcpu->cpu_load_mutex);
 		cpufreq_get_policy(&cpu_policy, i);
 		pcpu->policy_max = cpu_policy.cpuinfo.max_freq;
+		if (cpu_online(i))
+			pcpu->cur_freq = acpuclk_get_rate(i);
 		cpumask_copy(pcpu->related_cpus, cpu_policy.cpus);
 	}
 	freq_transition.notifier_call = cpufreq_transition_handler;
@@ -393,3 +410,16 @@ static int __init msm_rq_stats_init(void)
 	return ret;
 }
 late_initcall(msm_rq_stats_init);
+
+static int __init msm_rq_stats_early_init(void)
+{
+	/* Bail out if this is not an SMP Target */
+	if (!is_smp()) {
+		rq_info.init = 0;
+		return -ENOSYS;
+	}
+
+	pm_notifier(system_suspend_handler, 0);
+	return 0;
+}
+core_initcall(msm_rq_stats_early_init);
