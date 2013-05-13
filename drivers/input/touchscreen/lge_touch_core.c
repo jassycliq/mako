@@ -823,9 +823,6 @@ static void touch_input_report(struct lge_touch_data *ts)
 		}
 	}
 
-	if (is_screen_locked)
-		is_screen_locked = false;
-
 	input_sync(ts->input_dev);
 }
 
@@ -2099,8 +2096,6 @@ static void touch_early_suspend(struct early_suspend *h)
 		TOUCH_DEBUG_MSG("\n");
 
 	ts->curr_resume_state = 0;
-
-	is_screen_locked = true;
 
 	if (ts->fw_upgrade.is_downloading == UNDER_DOWNLOADING) {
 		TOUCH_INFO_MSG("early_suspend is not executed\n");
